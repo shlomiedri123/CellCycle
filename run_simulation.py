@@ -1,77 +1,121 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import pathlib
 from typing import Sequence
 
-from simulation.config.simulation_config import SimulationConfig
+import numpy as np
+
 from simulation.io.config_io import load_simulation_config
 from simulation.io.gene_io import load_gene_table
-from simulation.io.output_io import apply_measurement_model, load_measured_mrna_distribution, save_snapshots_csv
+from simulation.io.nf_io import load_nf_vector
+from simulation.io.output_io import (
+    build_measured_counts_matrix,
+    build_measured_snapshots_from_counts,
+    load_lognormal_params,
+    save_snapshot_csv,
+    save_sparse_measured_matrix,
+)
 from simulation.lineage.lineage_simulator import LineageSimulator
 from simulation.models.replication import build_genes
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run RNAP-limited lineage simulation.")
-    parser.add_argument("--config", required=True, help="Path to simulation YAML config")
-    parser.add_argument("--genes", required=True, help="Path to gene CSV table")
-    parser.add_argument("--out", required=True, help="Output CSV path for snapshots")
     parser.add_argument(
-        "--measured_dist",
-        type=pathlib.Path,
-        default=None,
-        help="Path to measured mRNA distribution JSON for parsed snapshots.",
+        "--config",
+        default="config.yaml",
+        help="Path to simulation YAML config (default: config.yaml)",
     )
-    parser.add_argument(
-        "--parsed_out",
-        type=pathlib.Path,
-        default=None,
-        help="Output CSV path for parsed snapshots (default: add _parsed suffix to --out).",
-    )
-    parser.add_argument("--n_samples", type=int, default=None, help="Override N_target_samples")
-    parser.add_argument("--snapshot_interval", type=int, default=10, help="Snapshot interval in steps")
     return parser.parse_args(argv)
 
 
-def maybe_override_samples(config: SimulationConfig, n_samples: int | None) -> SimulationConfig:
-    if n_samples is None:
-        return config
-    if n_samples <= 0:
-        raise ValueError("n_samples override must be positive")
-    return dataclasses.replace(config, N_target_samples=n_samples)
+def validate_time_grid(config, nf_vec: np.ndarray) -> int:
+    steps_total = config.T_total / config.dt
+    steps_total_int = int(round(steps_total))
+    if not np.isclose(steps_total, steps_total_int, rtol=0.0, atol=1e-9):
+        raise ValueError(f"T_total/dt must be an integer; got {steps_total}")
+
+    steps_cycle = config.T_div / config.dt
+    steps_cycle_int = int(round(steps_cycle))
+    if not np.isclose(steps_cycle, steps_cycle_int, rtol=0.0, atol=1e-9):
+        raise ValueError(f"T_div/dt must be an integer; got {steps_cycle}")
+    if nf_vec.size != steps_cycle_int:
+        raise ValueError(
+            f"Nf vector length mismatch: expected {steps_cycle_int} from T_div/dt, got {nf_vec.size}"
+        )
+    return steps_total_int
+
+
+def _resolve_parsed_csv_path(out_path: pathlib.Path, parsed_out_path: str | pathlib.Path | None) -> pathlib.Path:
+    if parsed_out_path is not None:
+        parsed_path = pathlib.Path(parsed_out_path)
+        if parsed_path.suffix != ".npz":
+            return parsed_path
+    suffix = out_path.suffix or ".csv"
+    return out_path.with_name(out_path.stem + "_parsed" + suffix)
+
+
+def _resolve_sparse_path(out_path: pathlib.Path, parsed_out_path: str | pathlib.Path | None) -> pathlib.Path:
+    if parsed_out_path is not None:
+        sparse_path = pathlib.Path(parsed_out_path)
+    else:
+        sparse_path = out_path.with_name(out_path.stem + "_measured.npz")
+    if sparse_path.suffix != ".npz":
+        sparse_path = sparse_path.with_suffix(".npz")
+    return sparse_path
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     sim_config = load_simulation_config(args.config)
-    sim_config = maybe_override_samples(sim_config, args.n_samples)
-    gene_configs = load_gene_table(args.genes) # Create the config for each gene. 
+    if sim_config.sparse and sim_config.measured_dist_path is None:
+        raise ValueError("sparse output requires measured_dist_path in the YAML config")
+
+    nf_vec = load_nf_vector(sim_config.nf_vector_path)
+    validate_time_grid(sim_config, nf_vec)
+    gene_configs = load_gene_table(sim_config.genes_path) # Create the config for each gene.
     genes = build_genes(gene_configs, sim_config) # Build Gene objects from the configs.
 
-    simulator = LineageSimulator(sim_config, genes, snapshot_interval_steps=args.snapshot_interval)
+    simulator = LineageSimulator(sim_config, genes, nf_vec)
     snapshots = simulator.run()
-    save_snapshots_csv(snapshots, args.out)
-    if args.measured_dist is not None:
-        mu, sigma = load_measured_mrna_distribution(args.measured_dist)
+    save_snapshot_csv(snapshots, sim_config.out_path)
+
+    if sim_config.measured_dist_path is not None:
+        params = load_lognormal_params(sim_config.measured_dist_path)
+        mu = float(params["mu"])
+        sigma = float(params["sigma"])
         gene_ids = [g.gene_id for g in genes]
-        parsed_rows = apply_measurement_model(
+        measured_counts = build_measured_counts_matrix(
             snapshots,
             gene_ids,
             mu=mu,
             sigma=sigma,
             seed=sim_config.random_seed,
         )
-        out_path = pathlib.Path(args.out)
-        parsed_path = args.parsed_out
-        if parsed_path is None:
-            suffix = out_path.suffix or ".csv"
-            parsed_path = out_path.with_name(out_path.stem + "_parsed" + suffix)
-        save_snapshots_csv(parsed_rows, parsed_path)
+
+        parsed_rows = build_measured_snapshots_from_counts(
+            snapshots,
+            gene_ids,
+            measured_counts,
+        )
+        parsed_path = _resolve_parsed_csv_path(pathlib.Path(sim_config.out_path), sim_config.parsed_out_path)
+        save_snapshot_csv(parsed_rows, parsed_path)
         print(f"Wrote parsed snapshots to {parsed_path}")
-    
-    print(f"Wrote {len(snapshots)} samples to {args.out}")
+
+        if sim_config.sparse:
+            sparse_path = _resolve_sparse_path(pathlib.Path(sim_config.out_path), sim_config.parsed_out_path)
+            cell_ids = [str(row["cell_id"]) for row in snapshots]
+            matrix_path, cells_path, genes_path = save_sparse_measured_matrix(
+                measured_counts,
+                cell_ids,
+                gene_ids,
+                sparse_path,
+            )
+            print(f"Wrote sparse measured matrix to {matrix_path}")
+            print(f"Wrote metadata to {cells_path} and {genes_path}")
+
+    print(f"Wrote {len(snapshots)} samples to {sim_config.out_path}")
 
 
 if __name__ == "__main__":

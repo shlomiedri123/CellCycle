@@ -1,6 +1,6 @@
 """Lineage simulation utilities."""
 
-from .lineage_simulator import LineageSimulator, build_nf_getter
+from .lineage_simulator import LineageSimulator
 from .partitioning import partition_mrna
 
-__all__ = ["LineageSimulator", "partition_mrna", "build_nf_getter"]
+__all__ = ["LineageSimulator", "partition_mrna"]

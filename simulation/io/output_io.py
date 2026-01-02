@@ -3,20 +3,21 @@ from __future__ import annotations
 import csv
 import json
 import pathlib
-from typing import List, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
+_BASE_FIELDS = ["cell_id", "parent_id", "generation", "age", "theta_rad", "phase"]
 
-def save_snapshots_csv(rows: Sequence[Mapping[str, object]], path: str | pathlib.Path) -> None:
+
+def save_snapshot_csv(rows: Sequence[Mapping[str, object]], path: str | pathlib.Path) -> None:
     if not rows:
         raise ValueError("No snapshot rows to write")
-    base_fields = ["cell_id", "parent_id", "generation", "age", "theta_rad", "phase"]
-    gene_fields: List[str] = []
+    gene_fields: list[str] = []
     for key in rows[0].keys():
-        if key not in base_fields:
+        if key not in _BASE_FIELDS:
             gene_fields.append(str(key))
-    fieldnames = base_fields + gene_fields
+    fieldnames = _BASE_FIELDS + gene_fields
 
     path_obj = pathlib.Path(path)
     path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +29,7 @@ def save_snapshots_csv(rows: Sequence[Mapping[str, object]], path: str | pathlib
             writer.writerow(row)
 
 
-def load_snapshots_csv(path: str | pathlib.Path) -> list[dict[str, object]]:
+def load_snapshot_csv(path: str | pathlib.Path) -> list[dict[str, object]]:
     with open(path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = [dict(row) for row in reader]
@@ -37,56 +38,146 @@ def load_snapshots_csv(path: str | pathlib.Path) -> list[dict[str, object]]:
     return rows
 
 
-def load_measured_mrna_distribution(path: str | pathlib.Path) -> tuple[float, float]:
-    """Load log-normal parameters (mu, sigma) for measured mRNA distribution."""
+def load_lognormal_params(path: str | pathlib.Path) -> dict:
+    """Load log-normal parameters (mu, sigma) from a JSON file."""
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     if "mu" not in payload or "sigma" not in payload:
-        raise ValueError("Measured mRNA distribution JSON must contain 'mu' and 'sigma'.")
-    return float(payload["mu"]), float(payload["sigma"])
+        raise ValueError("Lognormal parameter JSON must contain 'mu' and 'sigma'.")
+    payload["mu"] = float(payload["mu"])
+    payload["sigma"] = float(payload["sigma"])
+    return payload
 
 
-def apply_measurement_model(
+def build_measured_counts_matrix(
+    rows: Sequence[Mapping[str, object]],
+    gene_ids: Sequence[str],
+    mu: float,
+    sigma: float,
+    seed: int,
+) -> np.ndarray:
+    """Apply lognormal snapping to snapshot rows and return a counts matrix."""
+    counts = _counts_matrix_from_rows(rows, gene_ids)
+    rng = np.random.default_rng(seed)
+    measured = np.zeros_like(counts, dtype=int)
+    for idx, row_counts in enumerate(counts):
+        measured[idx] = _snap_counts(row_counts, mu, sigma, rng)
+    return measured
+
+
+def build_measured_snapshots(
     rows: Sequence[Mapping[str, object]],
     gene_ids: Sequence[str],
     mu: float,
     sigma: float,
     seed: int,
 ) -> list[dict]:
-    """Generate parsed snapshots by subsampling counts per cell from log-normal S."""
-    rng = np.random.default_rng(seed)
-    base_fields = ["cell_id", "parent_id", "generation", "age", "theta_rad", "phase"]
+    measured = build_measured_counts_matrix(rows, gene_ids, mu, sigma, seed)
+    return _merge_measured_rows(rows, gene_ids, measured)
+
+
+def build_measured_snapshots_from_counts(
+    rows: Sequence[Mapping[str, object]],
+    gene_ids: Sequence[str],
+    measured: np.ndarray,
+) -> list[dict]:
+    measured = np.asarray(measured, dtype=int)
+    if measured.ndim != 2:
+        raise ValueError("measured must be a 2D array")
+    if measured.shape[0] != len(rows):
+        raise ValueError("measured row count must match snapshot rows")
+    if measured.shape[1] != len(gene_ids):
+        raise ValueError("measured column count must match gene_ids")
+    return _merge_measured_rows(rows, gene_ids, measured)
+
+
+def save_sparse_measured_matrix(
+    counts: np.ndarray,
+    cell_ids: Sequence[str],
+    gene_ids: Sequence[str],
+    path: str | pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Save a CSR matrix plus cell/gene metadata sidecars."""
+    from scipy import sparse
+
+    counts = np.asarray(counts, dtype=int)
+    if counts.ndim != 2:
+        raise ValueError("counts must be a 2D array")
+    if counts.shape[0] != len(cell_ids):
+        raise ValueError("cell_ids length must match counts rows")
+    if counts.shape[1] != len(gene_ids):
+        raise ValueError("gene_ids length must match counts columns")
+
+    path_obj = pathlib.Path(path)
+    if path_obj.suffix != ".npz":
+        path_obj = path_obj.with_suffix(".npz")
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+    sp = sparse.csr_matrix(counts)
+    sparse.save_npz(path_obj, sp)
+
+    cells_path = path_obj.with_suffix(".cells.txt")
+    genes_path = path_obj.with_suffix(".genes.txt")
+    _write_lines(cells_path, [str(c) for c in cell_ids])
+    _write_lines(genes_path, [str(g) for g in gene_ids])
+    return path_obj, cells_path, genes_path
+
+
+def _counts_matrix_from_rows(
+    rows: Sequence[Mapping[str, object]],
+    gene_ids: Sequence[str],
+) -> np.ndarray:
+    if not rows:
+        raise ValueError("No snapshot rows provided")
+    if not gene_ids:
+        raise ValueError("gene_ids must be non-empty")
+    counts = np.array(
+        [[float(row[gid]) for gid in gene_ids] for row in rows],
+        dtype=float,
+    )
+    if np.any(counts < 0):
+        raise ValueError("Snapshot counts must be non-negative.")
+    counts = np.nan_to_num(counts, nan=0.0)
+    if not np.all(np.isclose(counts, np.round(counts))):
+        raise ValueError("Snapshot counts must be integers.")
+    return counts.astype(int)
+
+
+def _merge_measured_rows(
+    rows: Sequence[Mapping[str, object]],
+    gene_ids: Sequence[str],
+    measured: np.ndarray,
+) -> list[dict]:
     parsed_rows: list[dict] = []
-
-    for row in rows:
-        base = {field: row[field] for field in base_fields}
-        counts = np.array([float(row[gid]) for gid in gene_ids], dtype=float)
-        if np.any(counts < 0):
-            raise ValueError("Snapshot counts must be non-negative.")
-        counts = np.nan_to_num(counts, nan=0.0)
-        if not np.all(np.isclose(counts, np.round(counts))):
-            raise ValueError("Snapshot counts must be integers.")
-        counts_int = counts.astype(int)
-        total_int = int(np.sum(counts_int))
-
-        if total_int <= 0:
-            measured_counts = np.zeros_like(counts, dtype=int)
-        else:
-            s_draw = rng.lognormal(mean=mu, sigma=sigma)
-            s_int = int(np.floor(s_draw + 0.5))
-            if s_int < 0:
-                s_int = 0
-            if s_int > total_int:
-                s_int = total_int
-            if s_int == 0:
-                measured_counts = np.zeros_like(counts_int, dtype=int)
-            else:
-                measured_counts = _sample_without_replacement(counts_int, s_int, rng)
-
-        for gid, val in zip(gene_ids, measured_counts):
+    for row, counts in zip(rows, measured):
+        base = {field: row[field] for field in _BASE_FIELDS}
+        for gid, val in zip(gene_ids, counts):
             base[gid] = int(val)
         parsed_rows.append(base)
     return parsed_rows
+
+
+def _snap_counts(
+    counts: np.ndarray,
+    mu: float,
+    sigma: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    counts = counts.astype(int, copy=False)
+    total_int = int(np.sum(counts))
+    if total_int <= 0:
+        return np.zeros_like(counts, dtype=int)
+
+    s_draw = rng.lognormal(mean=mu, sigma=sigma)
+    s_int = int(np.floor(s_draw + 0.5))
+    if s_int < 0:
+        s_int = 0
+    if s_int > total_int:
+        s_int = total_int
+    if s_int == 0:
+        return np.zeros_like(counts, dtype=int)
+
+    return _sample_without_replacement(counts, s_int, rng)
 
 
 def _sample_without_replacement(
@@ -122,3 +213,9 @@ def _sample_without_replacement(
         remaining_sample -= draw
         remaining -= k
     return out
+
+
+def _write_lines(path: pathlib.Path, values: Sequence[str]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for val in values:
+            f.write(f"{val}\n")

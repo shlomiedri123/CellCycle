@@ -1,9 +1,5 @@
 # TRIP / scRNA-seq Bacterial Simulator
-
-This repository simulates lineage-resolved bacterial gene expression with RNAP-limited initiation, stochastic tau-leaping updates, and Cooper-Helmstetter B/C/D timing. It also includes utilities to generate random gene/config tables and to learn the empirical distribution of measured mRNA counts per cell, P(S), from experimental data.
-
 ## Install
-
 Recommended dependencies:
 
 - numpy
@@ -24,62 +20,50 @@ python simulation/kernels/setup.py build_ext --inplace
 python -m tools.random_gene_data   --n_genes 1000   --n_samples 100000   --out_dir out/configs   --seed 1
 ```
 
-Outputs `random_genes.csv`, `random_sim_config.yaml`, and `random_hidden_params.json` in `out/configs`.
+Outputs `random_genes.csv`, `nf_vector.npy`, `random_sim_config.yaml`, and `random_hidden_params.json` in `out/configs`.
 
 ## Run Simulation
 
 ```bash
-python -m lineage.lineage_simulator   --config out/configs/random_sim_config.yaml   --genes out/configs/random_genes.csv   --out out/sim_run/snapshots.csv
+python3 run_simulation.py --config sim_config.yaml
 ```
 
-Optional parsed snapshots (measurement model):
-
-```bash
-python -m lineage.lineage_simulator   --config out/configs/random_sim_config.yaml   --genes out/configs/random_genes.csv   --out out/sim_run/snapshots.csv   --measured_dist out/measured_mrna_dist/measured_mrna_distribution.json
-```
-
-## Fit Measured mRNA Distribution P(S)
-
-```bash
-python -m tools.fit_measured_mrna_distribution   --input data/ecoli_counts.csv   --outdir out/measured_mrna_dist   --min_counts 1   --bootstrap 500   --seed 42
-```
+The YAML file defines input paths (`genes_path`, `nf_vector_path`) and output
+paths (`out_path`, optional `parsed_out_path`), along with all numeric
+simulation parameters. If `measured_dist_path` is provided, the simulator
+applies lognormal snapping. When `sparse: true`, it writes a CSR matrix (`.npz`)
+plus `.cells.txt` and `.genes.txt` metadata; otherwise it writes parsed snapshots
+CSV to `parsed_out_path` (or `<out_path>_parsed.csv` by default).
 
 ## Plot Age Distribution
 
 ```bash
-python -m tools.plot_age_distribution   --snapshots out/sim_run/snapshots.csv   --config out/configs/random_sim_config.yaml   --out out/sim_run/age_distribution.png
+python -m tools.plots age --snapshots snapshots.csv --config sim_config.yaml --out out/age_distribution.png
 ```
 
 ## Plot TRIP Profiles (Grid)
 
 ```bash
-python -m tools.plot_trip_profiles   --snapshots out/sim_run/snapshots.csv   --genes out/configs/random_genes.csv   --config out/configs/random_sim_config.yaml   --out out/sim_run/trip_profiles_grid.png   --max_genes 100
+python -m tools.plots trip --snapshots snapshots.csv --config sim_config.yaml --out out/trip_profiles_grid.png --max_genes 100
 ```
 
 ## Plot Nf(t)
 
 ```bash
-python -m tools.plot_nf_profile   --config out/configs/random_sim_config.yaml   --genes out/configs/random_genes.csv   --out out/sim_run/nf_profile.png
+python -m tools.plots nf --config sim_config.yaml --out out/nf_profile.png
 ```
 
-## Nf(t) Modes
+## Nf(t) Vector Input
 
-`Nf_mode: provided` (default) uses a constant or YAML-defined sine function.
+Nf(t) is now provided as a vector file (e.g. `nf_vector.npy` or `.csv`). The
+vector length must equal `T_div / dt` (one cell-cycle), and the simulator
+indexes `Nf_vec[k % (T_div/dt)]` at time `t = k * dt` so Nf(t) repeats each cycle.
 
-```yaml
-Nf_mode: provided
-Nf_type: sine
-Nf_base: 1.5
-Nf_amp: 0.2
-Nf_phase: 0.0
-Nf_period: 40.0
-```
+## Division Time Sampling
 
-`Nf_mode: operon_scaled` generates Nf(t) from growth and operon copy number:
+Per-cell division times are drawn from a normal distribution with mean `T_div`
+and standard deviation `division_time_cv * T_div`. Bounding is controlled by:
 
-```yaml
-Nf_mode: operon_scaled
-Nf_birth: 1.5
-Nf_min: 1e-9
-Nf_max: 10.0
-```
+- `division_time_method: clip` (draw once, clamp to `[division_time_min, division_time_max]`)
+- `division_time_method: reject` or `truncated_normal` (resample until in-bounds;
+  abort after `division_time_max_attempts`)

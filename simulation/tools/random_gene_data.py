@@ -5,7 +5,8 @@ Gamma_esc, gamma_deg). Keep everything consistent so steady-state estimates are 
 
 Outputs:
 - gene CSV compatible with run_simulation.py
-- sim config YAML (with placeholder Nf_global; real callable described in hidden params)
+- Nf vector file (nf_vector.npy)
+- sim config YAML referencing the gene table and Nf vector
 - hidden metadata JSON (true Nf(t) params, gene phases/params)
 """
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import dataclasses
+import math
 from pathlib import Path
 from typing import Iterable, List
 
@@ -25,7 +27,7 @@ from simulation.config.simulation_config import SimulationConfig
 
 
 def _random_nffunc(rng: np.random.Generator, period: float = 40.0) -> tuple[callable, dict]:
-    """Return a slowly varying Nf_global(t) callable and its parameters."""
+    """Return a slowly varying Nf(t) callable and its parameters."""
     base = float(rng.uniform(1.0, 2.0))
     amp = float(rng.uniform(0.0, 0.25))
     phase = float(rng.uniform(0.0, 2.0 * np.pi))
@@ -104,6 +106,13 @@ def _write_gene_csv(path: Path, genes: Iterable[GeneConfig]) -> None:
             writer.writerow(asdict(g))
 
 
+def _suggest_total_time(n_samples: int, initial_cells: int, t_div: float) -> float:
+    if n_samples <= initial_cells:
+        return t_div
+    cycles = math.ceil(math.log2(n_samples / float(initial_cells)))
+    return (cycles + 1) * t_div
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate random genes and configs.")
     parser.add_argument("--n_genes", type=int, required=True, help="Number of genes to generate")
@@ -116,35 +125,38 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     genes, gene_meta = generate_genes(args.n_genes, args.chrom_length, seed=args.seed)
-    nf_func, nf_params = _random_nffunc(np.random.default_rng(args.seed), period=40.0)  # Nf(t) global, slowly varying in [~1, ~2]
+    nf_func, nf_params = _random_nffunc(np.random.default_rng(args.seed), period=40.0)  # Nf(t) slowly varying in [~1, ~2]
+    t_div = 40.0
+    initial_cells = 3
+    t_total = _suggest_total_time(args.n_samples, initial_cells, t_div)
+    dt = 0.1
+    n_steps = int(round(t_div / dt))
+    time_grid = np.arange(n_steps, dtype=float) * dt
+    nf_vec = np.array([nf_func(t) for t in time_grid], dtype=float)
+    nf_path = args.out_dir / "nf_vector.npy"
+    np.save(nf_path, nf_vec)
+
     sim_config_runtime = SimulationConfig(
         B_period=10.0,
         C_period=20.0,
         D_period=10.0,
-        dt=0.1,
-        N_target_cells=1000,
+        T_total=t_total,
+        dt=dt,
         N_target_samples=args.n_samples,
         random_seed=args.seed or 123,
         chromosome_length_bp=args.chrom_length,
-        Nf_global=nf_func,  # callable for simulation runtime
         MAX_MRNA_PER_GENE=10_000,
+        genes_path=str(args.out_dir / "random_genes.csv"),
+        nf_vector_path=str(nf_path),
+        out_path=str(args.out_dir / "snapshots.csv"),
+        initial_cell_count=initial_cells,
     )
 
     _write_gene_csv(args.out_dir / "random_genes.csv", genes)
 
-    # Save a YAML-friendly config with Nf parameters; loader will rebuild callable
-    sim_config_yaml = dataclasses.replace(sim_config_runtime, Nf_global=nf_params["base"])
+    # Save a YAML-friendly config referencing the Nf vector file.
+    sim_config_yaml = sim_config_runtime
     cfg_dict = dataclasses.asdict(sim_config_yaml)
-    cfg_dict.update(
-        {
-            "Nf_type": "sine",
-            "Nf_base": nf_params["base"],
-            "Nf_amp": nf_params["amp"],
-            "Nf_phase": nf_params["phase"],
-            "Nf_period": nf_params["period"],
-            "Nf_mode": "provided",
-        }
-    )
     with (args.out_dir / "random_sim_config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg_dict, f, sort_keys=True)
 
