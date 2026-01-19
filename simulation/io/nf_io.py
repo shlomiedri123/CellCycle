@@ -1,3 +1,5 @@
+"""Load deterministic Nf(t) vectors for RNAP limitation."""
+
 from __future__ import annotations
 
 import pathlib

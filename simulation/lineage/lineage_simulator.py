@@ -1,3 +1,14 @@
+"""Lineage simulator for stochastic single-cell mRNA dynamics.
+
+Implements a birth-death process with time-dependent transcription rates:
+    dm/dt = Gamma * g(t) * O(t) - gamma * m
+where g(t) is gene copy number (1 before replication, 2 after t_rep) and
+O(t) = 1 / (1 + (k_off + Gamma) / (Nf(t) * k_on)).
+
+The stochastic update is performed via Poisson tau-leaping, and division uses
+binomial partitioning of mRNA between daughter cells.
+"""
+
 from __future__ import annotations
 
 from typing import List

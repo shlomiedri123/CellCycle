@@ -1,3 +1,6 @@
+// pybind11 bindings for the tau-leaping mRNA birth-death kernel.
+// Exposes single-step and batch updates to the Python simulator.
+
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <cstddef>

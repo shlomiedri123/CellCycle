@@ -8,6 +8,8 @@ Outputs:
 - Nf vector file (nf_vector.npy)
 - sim config YAML referencing the gene table and Nf vector
 - hidden metadata JSON (true Nf(t) params, gene phases/params)
+
+This is a data-generation helper, not part of the core simulator dynamics.
 """
 
 from __future__ import annotations
@@ -37,7 +39,16 @@ def _random_nffunc(rng: np.random.Generator, period: float = 40.0) -> tuple[call
 
     return _nf, {"base": base, "amp": amp, "phase": phase, "period": period}
 
-def _draw_gene(idx: int, total: int, rng: np.random.Generator, chrom_length: float) -> tuple[GeneConfig, dict]:
+def _draw_gene(
+    idx: int,
+    total: int,
+    rng: np.random.Generator,
+    chrom_length: float,
+    nf_ref: float,
+    occ_low: float,
+    occ_high: float,
+    max_attempts: int,
+) -> tuple[GeneConfig, dict]:
     gene_id = f"gene_{idx}"
     # Stratify along the chromosome to avoid clustering
     span = chrom_length / float(total)
@@ -53,16 +64,36 @@ def _draw_gene(idx: int, total: int, rng: np.random.Generator, chrom_length: flo
     # Michael: k_off ≈ 0. Occupancy differences come from k_on vs Gamma_esc.
     k_off = float(rng.uniform(0.0, 1e-3))
 
-    if phase_two:
-        # Phase II: occupancy ~1 (high k_on, moderate Gamma_esc)
-        k_on = float(rng.uniform(0.1, 0.3))
-        Gamma_esc = float(rng.uniform(0.2, 3.0))
-    else:
-        # Phase I: lower occupancy (smaller k_on and/or larger Gamma_esc)
-        k_on = float(rng.uniform(0.01, 0.08))
-        Gamma_esc = float(rng.uniform(0.05, 1.5))
+    if nf_ref <= 0:
+        raise ValueError("nf_ref must be positive")
 
-    meta = {"phase": "II" if phase_two else "I"}
+    if phase_two:
+        # Phase II: high occupancy (A << Nf)
+        k_on_range = (0.3, 3.0)
+        Gamma_range = (0.05, 0.8)
+        occ_target = occ_high
+    else:
+        # Phase I: low occupancy (A >> Nf)
+        k_on_range = (0.005, 0.08)
+        Gamma_range = (0.3, 3.0)
+        occ_target = occ_low
+
+    for _ in range(max_attempts):
+        k_on = float(rng.uniform(*k_on_range))
+        Gamma_esc = float(rng.uniform(*Gamma_range))
+        occ = _occupancy(k_on, k_off, Gamma_esc, nf_ref)
+        if phase_two and occ >= occ_target:
+            break
+        if not phase_two and occ <= occ_target:
+            break
+    else:
+        phase_label = "II" if phase_two else "I"
+        raise RuntimeError(
+            f"Failed to sample parameters for regime {phase_label} with nf_ref={nf_ref:.3f}"
+        )
+
+    phase = "II" if phase_two else "I"
+    meta = {"phase": phase}
 
     return (
         GeneConfig(
@@ -72,17 +103,35 @@ def _draw_gene(idx: int, total: int, rng: np.random.Generator, chrom_length: flo
             k_off_rnap=k_off,
             Gamma_esc=Gamma_esc,
             gamma_deg=gamma_deg,
+            phase=phase,
         ),
         meta,
     )
 
 
-def generate_genes(n_genes: int, chrom_length: float, seed: int | None = None) -> tuple[List[GeneConfig], List[dict]]:
+def generate_genes(
+    n_genes: int,
+    chrom_length: float,
+    nf_ref: float,
+    seed: int | None = None,
+    occ_low: float = 0.2,
+    occ_high: float = 0.8,
+    max_attempts: int = 1000,
+) -> tuple[List[GeneConfig], List[dict]]:
     rng = np.random.default_rng(seed)
     genes: List[GeneConfig] = []
     meta: List[dict] = []
     for i in range(1, n_genes + 1):
-        g, m = _draw_gene(i, n_genes, rng, chrom_length)
+        g, m = _draw_gene(
+            i,
+            n_genes,
+            rng,
+            chrom_length,
+            nf_ref=nf_ref,
+            occ_low=occ_low,
+            occ_high=occ_high,
+            max_attempts=max_attempts,
+        )
         g.validate()
         genes.append(g)
         meta.append(m)
@@ -98,7 +147,15 @@ def _write_gene_csv(path: Path, genes: Iterable[GeneConfig]) -> None:
     import csv
     from dataclasses import asdict
 
-    fields = ["gene_id", "chrom_pos_bp", "k_on_rnap", "k_off_rnap", "Gamma_esc", "gamma_deg"]
+    fields = [
+        "gene_id",
+        "chrom_pos_bp",
+        "k_on_rnap",
+        "k_off_rnap",
+        "Gamma_esc",
+        "gamma_deg",
+        "phase",
+    ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -124,7 +181,6 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    genes, gene_meta = generate_genes(args.n_genes, args.chrom_length, seed=args.seed)
     nf_func, nf_params = _random_nffunc(np.random.default_rng(args.seed), period=40.0)  # Nf(t) slowly varying in [~1, ~2]
     t_div = 40.0
     initial_cells = 3
@@ -133,6 +189,13 @@ def main() -> None:
     n_steps = int(round(t_div / dt))
     time_grid = np.arange(n_steps, dtype=float) * dt
     nf_vec = np.array([nf_func(t) for t in time_grid], dtype=float)
+    nf_ref = float(np.mean(nf_vec))
+    genes, gene_meta = generate_genes(
+        args.n_genes,
+        args.chrom_length,
+        nf_ref=nf_ref,
+        seed=args.seed,
+    )
     nf_path = args.out_dir / "nf_vector.npy"
     np.save(nf_path, nf_vec)
 

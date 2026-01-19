@@ -1,3 +1,8 @@
+"""Binomial partitioning of mRNA at cell division.
+
+Each transcript is independently assigned to one of the two daughter cells.
+"""
+
 from __future__ import annotations
 
 import numpy as np

@@ -1,3 +1,9 @@
+"""Load and validate simulation configuration from YAML.
+
+Resolves file paths and instantiates SimulationConfig, which enforces
+time-grid consistency (T_div = B + C + D and dt > 0).
+"""
+
 from __future__ import annotations
 
 import os

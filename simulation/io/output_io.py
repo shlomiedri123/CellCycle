@@ -1,3 +1,9 @@
+"""Snapshot I/O and optional measurement post-processing.
+
+Handles CSV and sparse outputs for simulated mRNA counts. Optional measurement
+noise utilities live here but are not part of the core simulator dynamics.
+"""
+
 from __future__ import annotations
 
 import csv

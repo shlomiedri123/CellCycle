@@ -1,1 +1,1 @@
-"""C++ kernels for stochastic simulation."""
+"""C++ kernels for stochastic simulation (tau-leaping updates)."""

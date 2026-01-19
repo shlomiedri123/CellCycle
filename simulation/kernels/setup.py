@@ -1,3 +1,5 @@
+"""Build script for the tau-leaping C++ extension."""
+
 from __future__ import annotations
 
 import pathlib

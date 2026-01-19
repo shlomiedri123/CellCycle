@@ -1,3 +1,9 @@
+"""Cell state container for lineage simulations.
+
+Represents a single cell with age, division time, and per-gene mRNA counts.
+No dynamics are implemented here; it is a mutable state used by the simulator.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

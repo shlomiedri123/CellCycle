@@ -1,3 +1,9 @@
+"""Replication timing utilities for gene dosage changes.
+
+Computes per-gene replication times from chromosomal position and builds
+Gene objects used by the stochastic lineage simulator.
+"""
+
 from __future__ import annotations
 
 from typing import Iterable, List
@@ -23,6 +29,7 @@ def build_genes(gene_configs: Iterable[GeneConfig], sim_config: SimulationConfig
             Gene(
                 gene_id=cfg.gene_id,
                 chrom_pos_bp=cfg.chrom_pos_bp,
+                phase=cfg.phase,
                 gamma_deg=cfg.gamma_deg,
                 t_rep=t_rep,
                 Gamma_esc=cfg.Gamma_esc,

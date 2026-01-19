@@ -1,4 +1,4 @@
-"""Input/output helpers for configs, genes, and snapshots."""
+"""Input/output helpers for simulation configs, genes, and snapshots."""
 
 from .config_io import load_simulation_config
 from .gene_io import load_gene_table

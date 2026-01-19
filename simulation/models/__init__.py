@@ -1,4 +1,7 @@
-"""Model definitions for genes, cells, and replication timing."""
+"""Model definitions for genes, cells, and replication timing.
+
+These data containers support the stochastic lineage simulation core.
+"""
 
 from .gene import Gene
 from .cell import Cell

@@ -1,3 +1,7 @@
+// Tau-leaping kernel for stochastic mRNA birth-death dynamics.
+// Births ~ Poisson(Gamma * g(t) * O(t) * dt), deaths ~ Poisson(gamma * m * dt).
+// Promoter occupancy O(t) and gene dosage g(t) are computed by the simulator.
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

@@ -1,3 +1,10 @@
+"""Simulation configuration for stochastic lineage dynamics.
+
+Defines the global time grid (dt, T_div) and cell-cycle periods (B/C/D) used
+by the simulator. The time grid must be consistent with the provided Nf(t)
+vector: len(nf_vec) == T_div / dt and T_total / dt must be an integer.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

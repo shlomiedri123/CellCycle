@@ -1,3 +1,9 @@
+"""Tau-leaping wrappers for stochastic mRNA birth-death dynamics.
+
+Births are sampled as Poisson(Gamma * g(t) * O(t) * dt) and deaths as
+Poisson(gamma * m * dt). The heavy lifting is performed by the C++ kernel.
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -27,6 +33,8 @@ def tau_leap_batch(
     max_mrna_per_gene: int,
     rng_seeds: Iterable[int],
 ) -> np.ndarray:
+    if dt <= 0:
+        raise ValueError("dt must be positive")
     kernel = _load_kernel()
 
     ages_arr = np.asarray(ages, dtype=np.float64, order="C")
