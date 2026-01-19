@@ -1,21 +1,34 @@
-out/
+.DS_Store
 __pycache__/
 *.pyc
 build/
 *.so
 .pytest_cache/
-.DS_Store
+out/
+xcrun_db
+
+# Local-only folders
+data/
+tools/
+lineage/
+tests/
+conftest.py
+*.zip
+
+# Local-only simulation utilities
 simulation/analysis/
-tests/output/
-tests/sim_layout/snapshots.csv
-tools/plots.py
+
+# Local-only example outputs
+simulation/examples/sim_layout/snapshots.csv
+simulation/examples/sim_layout/snapshots_parsed.csv
+simulation/examples/sim_layout/random_hidden_params.json
+simulation/examples/sim_layout/random_sim_config.yaml
+
+# Local-only root samples
 /sim_config.yaml
 /random_genes.csv
 /nf_vector.npy
 /S_params.json
 /snapshots.csv
 /snapshots_parsed.csv
-.DS_Store
-simulation/analysis/
-data/
-tests/
+/README.md

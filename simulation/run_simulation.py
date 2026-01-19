@@ -1,3 +1,9 @@
+"""Command-line entrypoint for running the stochastic simulator.
+
+Loads a YAML config, validates the time grid, runs the lineage simulator, and
+optionally applies measurement post-processing (lognormal or S-vector).
+"""
+
 from __future__ import annotations
 
 import argparse
