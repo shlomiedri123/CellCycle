@@ -8,6 +8,13 @@ build/
 simulation/analysis/
 tests/output/
 tests/sim_layout/snapshots.csv
+tools/plots.py
+/sim_config.yaml
+/random_genes.csv
+/nf_vector.npy
+/S_params.json
+/snapshots.csv
+/snapshots_parsed.csv
 .DS_Store
 simulation/analysis/
 data/
