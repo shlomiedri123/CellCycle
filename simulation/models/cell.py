@@ -11,8 +11,6 @@ from typing import Optional
 
 import numpy as np
 
-# Question : Should we add an age limit for the cell? to make sure none of them explode and we do have 
-# Some limit for the age 
 
 @dataclass
 class Cell:
