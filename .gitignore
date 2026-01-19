@@ -1,0 +1,7 @@
+out/
+__pycache__/
+*.pyc
+build/
+*.so
+.pytest_cache/
+.DS_Store
