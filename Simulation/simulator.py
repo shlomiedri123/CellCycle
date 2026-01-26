@@ -99,6 +99,62 @@ class LineageSimulator:
         occupancy = self.compute_promoter_occ(N_f)
         return gene_copies * self.Gamma * occupancy / self.gamma_deg
 
+    @staticmethod
+    def _cumulative_trapz(values: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """Compute cumulative trapezoidal integral for a uniform grid."""
+        values = np.asarray(values, dtype=np.float64)
+        t = np.asarray(t, dtype=np.float64)
+        if values.size == 0:
+            return np.array([], dtype=np.float64)
+        if values.shape != t.shape:
+            raise ValueError("values and t must have the same shape")
+        if values.size < 2:
+            return np.zeros_like(values)
+        dt = np.diff(t)
+        mid = 0.5 * (values[1:] + values[:-1])
+        return np.concatenate(([0.0], np.cumsum(mid * dt)))
+
+    def _compute_exact_mRNA_profiles(self) -> np.ndarray:
+        """Compute exact periodic mRNA profiles for all genes over one cycle.
+
+        Uses the full forcing term f(t) = Gamma * g(t) * O(t) without
+        the steady-state approximation. Periodic boundary uses halving at
+        division: m(0) = 0.5 * m(tau-).
+        """
+        dt = float(self.sim_config.dt)
+        n_steps_cycle = int(round(self.sim_config.T_div / dt))
+        t_grid = np.arange(n_steps_cycle, dtype=np.float64) * dt
+        tau = float(self.sim_config.T_div)
+
+        nf_vals = np.asarray(self.nf_vec, dtype=np.float64)
+        if nf_vals.size != n_steps_cycle:
+            raise ValueError("Nf vector length must equal T_div/dt")
+
+        profiles = np.zeros((len(self.genes), n_steps_cycle), dtype=np.float64)
+
+        for g_idx in range(len(self.genes)):
+            gamma = float(self.gamma_deg[g_idx])
+            Gamma = float(self.Gamma[g_idx])
+            k_on = float(self.k_on_rnap[g_idx])
+            k_off = float(self.k_off_rnap[g_idx])
+
+            dosage = np.where(t_grid >= self.t_rep[g_idx], 2.0, 1.0)
+            denom = 1.0 + (k_off + Gamma) / np.maximum(k_on * nf_vals, 1e-12)
+            occupancy = 1.0 / denom
+            forcing = Gamma * dosage * occupancy
+
+            integrand = np.exp(gamma * t_grid) * forcing
+            integral_to_t = self._cumulative_trapz(integrand, t_grid)
+
+            end_val = np.exp(gamma * tau) * forcing[0]
+            cycle_integrand = np.concatenate([integrand, [end_val]])
+            cycle_integral = float(np.trapz(cycle_integrand, dx=dt))
+
+            denom_cycle = 2.0 * np.exp(gamma * tau) - 1.0
+            profiles[g_idx] = np.exp(-gamma * t_grid) * (cycle_integral / denom_cycle + integral_to_t)
+
+        return np.maximum(profiles, 0.0)
+
     def _calculate_cell_phase(self, age: float) -> str:
         """Determine cell phase based on age and division time."""
         if age < self.sim_config.B_period:
@@ -207,13 +263,15 @@ class LineageSimulator:
         For an exponentially growing population, the age distribution follows:
         P(age) = ln(2)/T_div * 2^(-age/T_div)
 
-        mRNA is initialized around the analytical steady-state with normal noise.
+        mRNA is initialized around the exact periodic solution with normal noise.
         """
         cells: list[Cell] = []
         T_div = self.sim_config.T_div
         dt = self.sim_config.dt
         n_steps_cycle = int(round(T_div / dt))
-
+        exact_profiles = self._compute_exact_mRNA_profiles()
+        if self.initial_cell_count < 10:
+            self.initial_cell_count = 10  + self.initial_cell_count
         for cid in range(self.initial_cell_count):
             # Draw age from exponential distribution (truncated to cell cycle)
             # For exponentially growing population: P(a) ∝ 2^(-a/T_div)
@@ -224,17 +282,15 @@ class LineageSimulator:
                 if age < T_div:
                     break
 
-            # Get Nf at this age (use step index for nf_vec lookup)
+            # Get step index for this age (matches nf_vec/exact profile indexing)
             step_idx = int(age / dt) % n_steps_cycle
-            N_f = float(self.nf_vec[step_idx])
+            # Exact periodic mRNA for this age
+            m_exact = exact_profiles[:, step_idx]
 
-            # Compute analytical steady-state mRNA for this cell
-            m_ss = self._compute_steady_state_mRNA(age, N_f)
-
-            # Add normal noise around steady-state (CV ~ 0.3, Poisson-like)
+            # Add normal noise around exact solution (CV ~ 0.3, Poisson-like)
             # Ensure non-negative integer counts
-            noise_std = np.sqrt(m_ss) * 0.5  # Sub-Poisson noise for smoother init
-            mrna = rng.normal(m_ss, noise_std)
+            noise_std = np.sqrt(m_exact) * 0.5  # Sub-Poisson noise for smoother init
+            mrna = rng.normal(m_exact, noise_std)
             mrna = np.maximum(mrna, 0.0).astype(np.float64)
 
             cells.append(
@@ -252,8 +308,7 @@ class LineageSimulator:
         max_steps = self.max_steps
         snapshot_min_steps = self.sim_config.snapshot_min_interval_steps
         snapshot_jitter_steps = self.sim_config.snapshot_jitter_steps
-        next_snapshot_step = snapshot_min_steps + int(rng.integers(0, snapshot_jitter_steps + 1))
-
+        next_snapshot_step = np.mod(snapshot_min_steps + int(rng.integers(0, snapshot_jitter_steps + 1)), self.sim_config.T_div) + self.sim_config.T_div
         while len(snapshots) < self.sim_config.N_target_samples:
             if step_idx >= max_steps:
                 raise RuntimeError(
